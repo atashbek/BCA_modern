@@ -206,5 +206,6 @@ A.S. Ashirov, BCA_modern: an open-source universal binary collision approximatio
 
 MIT — see LICENSE file.
 
+## Support
 
 For questions, bug reports, or feature requests, please use the GitHub Issues page.
