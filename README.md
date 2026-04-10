@@ -205,8 +205,5 @@ A.S. Ashirov, BCA_modern: an open-source universal binary collision approximatio
 
 MIT — see LICENSE file.
 
-## Contact
 
-A.S. Ashirov — atabek.ashirovs@gmail.com  
-ORCID: 0000-0002-8731-7531  
-Department of Physics, Urgench State University, Urgench 220100, Uzbekistan
+For questions, bug reports, or feature requests, please use the GitHub Issues page.
