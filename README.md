@@ -1,6 +1,4 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19501756.svg)](https://doi.org/10.5281/zenodo.19501756)
-
-# BCA_modern
+# BCA_modern   [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19501756.svg)](https://doi.org/10.5281/zenodo.19501756)
 
 **Universal binary collision approximation code for low-energy ion scattering simulation from crystalline surfaces**
 
