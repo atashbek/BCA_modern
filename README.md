@@ -1,211 +1,134 @@
-# BCA_modern   
+# BCA_modern
 
-**Universal binary collision approximation code for low-energy ion scattering simulation from crystalline surfaces**
+**An open-source universal binary collision approximation code for low-energy ion scattering from crystalline surfaces**
 
-A.S. Ashirov
-
-Department of Physics, Urgench State University, Uzbekistan
-
----
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19501756-blue)](https://doi.org/10.5281/zenodo.19501756)
 
 ## Overview
 
-BCA_modern is a Python implementation of the binary collision approximation (BCA) for simulating low-energy ion scattering (LEIS) from single-crystal surfaces. The code is designed to handle arbitrary crystal structures — from simple zincblende semiconductors to complex oxides — with a single unified framework, eliminating the need to modify source code when changing the target material.
+BCA_modern is a Python code for simulating low-energy ion scattering (LEIS) from crystalline surfaces using the binary collision approximation. It combines several features not previously available in a single open-source tool:
 
-The main physical models incorporated in the code are:
-
-- **Pair-specific NLH interatomic potentials** (Nordlund, Lehtola, Hobler, Phys. Rev. A 111, 2025) for 70 ion–atom combinations, replacing the universal ZBL potential
-- **Position-dependent electronic stopping** Se(v, ρ) with reduced stopping in channel centres
-- **Debye thermal vibrations** with configurable temperature
-- **Hagstrum ion neutralisation** P⁺ = exp(−v₀/v⊥) for ESA-LEIS quantification
-- **Adaptive Gauss–Kronrod quadrature** for the scattering integral (scipy.integrate.quad)
-- **Universal crystal navigator** with numpy-accelerated atom search
-
-## Requirements
-
-- Python 3.8 or later
-- NumPy
-- SciPy
-- Matplotlib (optional, for plotting)
-
-No compilation is required. No proprietary libraries or specialised hardware are needed.
+- **Pair-specific NLH interatomic potentials** for 70 ion–atom combinations (He⁺, Ne⁺, Ar⁺, Kr⁺, Xe⁺ on 14 target elements), based on DFT calculations by Nordlund, Lehtola & Hobler (Phys. Rev. A 111, 2025)
+- **Position-dependent electronic stopping** Se(v, ρ) with channel reduction
+- **Debye thermal vibrations** with element-specific amplitudes
+- **Hagstrum ion neutralisation** model
+- **35 built-in crystal structures**: zincblende (GaP, GaAs, InP, CdTe, ZnSe, ...), wurtzite (GaN, AlN, InN), rocksalt (MgO), corundum (α-Al₂O₃), cristobalite (β-SiO₂), FCC metals (Au, Cu, Ag, Al, Ni, Pt), BCC metals (W, Fe, Mo), diamond cubic (Si, Ge, C, Sn)
+- **CIF file input** for user-defined structures
+- **Ternary alloy support** via `make_fcc_ternary()`
+- **Azimuthal scanning** via `azimuthal_scan()`
+- **Automatic calibration** — all physical parameters derived from just three inputs
 
 ## Installation
-
-```bash
-pip install -r requirements.txt
-```
-
-Or install dependencies manually:
 
 ```bash
 pip install numpy scipy matplotlib
 ```
 
-Place `BCA_modern.py` in your working directory. The code is a single self-contained file with no external data dependencies — all 70 NLH potential coefficients and 21 crystal structure definitions are embedded in the source.
+No compilation required. Python 3.8+ with NumPy ≥ 1.20 and SciPy ≥ 1.7.
 
-## Quick start
-
-The simplest way to run a simulation is through the automatic calibration module, which derives all physical parameters from three inputs:
+## Quick Start
 
 ```python
 from BCA_modern import *
 
+# Run a complete LEIS simulation in one line
 setup = auto_setup(ion_Z=10, crystal_name='GaP', E0=2000)
 results = setup['sim'].run_simulation()
 
-backscattered = [r for r in results if r.backscattered]
-print(f'Backscattered: {len(backscattered)} ions')
+# Analyse results
+back = [r for r in results if r.backscattered]
+print(f'Backscattered: {len(back)}/{len(results)}')
+for r in back[:5]:
+    print(f'  E = {r.final_energy:.0f} eV, angle = {r.polar_angle:.1f}°')
 ```
 
-This computes the scattering of 2 keV Ne⁺ ions from GaP(100)⟨110⟩ with NLH potentials, position-dependent stopping, and thermal vibrations at 300 K — all configured automatically.
-
-## File structure
-
-```
-BCA_modern/
-├── BCA_modern.py          Main code (single file, ~1650 lines)
-├── README.md                  This file
-├── LICENSE                    MIT licence
-├── requirements.txt           Python dependencies
-├── examples/
-│   ├── example_basic.py       Minimal working example
-│   ├── example_validation.py  Kinematic factor verification
-│   └── example_normal.py      Normal-incidence LEIS comparison
-└── output/
-    └── (generated at runtime)
-```
-
-## Built-in crystal structures (21 materials)
-
-| Structure type | Materials | Atoms/cell |
-|:--------------|:----------|:----------:|
-| Zincblende (F‑43m) | GaP, GaAs, InP, InAs, CdTe, ZnSe, ZnS, ZnTe, HgTe, CdS, GaSb, InSb, AlAs, AlP, 3C‑SiC | 8 |
-| Wurtzite (P6₃mc) | GaN, AlN, InN | 4 |
-| Rocksalt (Fm‑3m) | MgO | 8 |
-| Corundum (R‑3c) | α‑Al₂O₃ | 30 |
-| Cristobalite (Fd‑3m) | β‑SiO₂ | 24 |
-
-Additional structures can be loaded from CIF files using `load_cif('structure.cif')`.
-
-## NLH potential coverage (70 pairs)
-
-Five noble gas projectiles (He, Ne, Ar, Kr, Xe) × fourteen target elements (N, O, Mg, Al, Si, P, S, Zn, Ga, As, Se, Cd, In, Te). Coefficients from Zenodo dataset doi:10.5281/zenodo.14172632, including the November 2025 erratum.
-
-## Available ions
-
-| Symbol | Z | Mass (amu) |
-|:------:|:-:|:----------:|
-| He⁺ | 2 | 4.003 |
-| Ne⁺ | 10 | 20.180 |
-| Ar⁺ | 18 | 39.948 |
-| Kr⁺ | 36 | 83.798 |
-| Xe⁺ | 54 | 131.293 |
-
-## Key parameters
-
-| Parameter | Meaning | Typical values |
-|:----------|:--------|:---------------|
-| `ion_Z` | Projectile atomic number | 2, 10, 18, 36, 54 |
-| `crystal_name` | Target crystal | 'GaP', 'SiO2', etc. |
-| `E0` | Beam energy (eV) | 500–10000 |
-| `psi_deg` | Glancing angle (degrees) | 1–90 (90 = normal incidence) |
-| `xi_deg` | Azimuthal angle (degrees) | 0–90 |
-| `n_trajectories` | Number of ion trajectories | 1000–100000 |
-
-## Output
-
-Each trajectory returns:
-
-| Field | Description |
-|:------|:-----------|
-| `final_energy` | Ion energy after scattering (eV) |
-| `polar_angle` | Exit polar angle (degrees from surface) |
-| `azimuthal_angle` | Exit azimuthal angle (degrees) |
-| `n_collisions` | Number of binary collisions |
-| `total_inelastic_loss` | Electronic energy loss (eV) |
-| `max_depth` | Maximum penetration depth (Å) |
-| `ion_survival_prob` | Neutralisation survival probability P⁺ |
-| `backscattered` | True if ion returned above surface |
-
-A structured text file `bca_modern_output.dat` is also generated with per-trajectory data.
-
-## Performance
-
-| Crystal | Atoms/cell | Speed (traj/s) | Time for 10⁴ traj |
-|:--------|:----------:|:--------------:|:-----------------:|
-| GaP | 8 | ~530 | ~19 s |
-| CdTe | 8 | ~400 | ~25 s |
-| β‑SiO₂ | 24 | ~250 | ~40 s |
-| α‑Al₂O₃ | 30 | ~200 | ~50 s |
-
-Measured on a single core of an Intel i5-class processor. Performance scales linearly with trajectory count.
-
-## Advanced usage
-
-### Custom incidence geometry
+## Optional Parameters
 
 ```python
 setup = auto_setup(
-    ion_Z=2,               # He+
-    crystal_name='SiO2',
-    E0=3000,               # 3 keV
-    psi_deg=90.0,          # normal incidence
-    n_trajectories=10000,
+    ion_Z=10,              # Projectile atomic number (Ne)
+    crystal_name='GaP',    # Crystal from database (35 available)
+    E0=2000,               # Beam energy (eV)
+    psi_deg=3.0,           # Glancing angle (degrees)
+    xi_deg=0.0,            # Azimuthal angle (degrees)
+    temperature_K=300,     # Lattice temperature (K)
+    n_trajectories=5000,   # Number of trajectories
 )
 ```
 
-### Detector filtering
+## Output Fields
+
+Each trajectory result contains:
+- `final_energy` — energy at exit (eV)
+- `polar_angle` — polar exit angle (degrees)
+- `azimuthal_angle` — azimuthal exit angle (degrees)
+- `n_collisions` — number of binary collisions
+- `backscattered` — True/False
+- `max_depth` — maximum penetration depth (Å)
+- `ion_survival_prob` — Hagstrum neutralisation probability
+
+## Normal Incidence Example
 
 ```python
-setup = auto_setup(ion_Z=10, crystal_name='GaP', E0=2000,
-                   enable_detector=True, detector_angle=136.0)
+# He+ → Au at 3 keV, normal incidence, detector at 145°
+setup = auto_setup(ion_Z=2, crystal_name='Au', E0=3000, psi_deg=90.0)
+results = setup['sim'].run_simulation()
+
+det = Detector(theta_deg=145.0)
+back = [r for r in results if r.backscattered]
+detected = [r for r in back
+    if abs(det.scattering_angle_for_ion(90.0, r.polar_angle, r.azimuthal_angle) - 145.0) < 5.0]
+
+print(f'Detected at 145°±5°: {len(detected)}')
 ```
 
-### Neutralisation
+## Built-in Crystal Structures (35)
 
-```python
-setup = auto_setup(ion_Z=10, crystal_name='GaP', E0=2000,
-                   enable_neutralisation=True)
-```
+| Family | Materials | Atoms/cell |
+|--------|-----------|-----------|
+| Zincblende | GaP, GaAs, InP, InAs, CdTe, ZnSe, ZnS, ZnTe, HgTe, CdS, GaSb, InSb, AlAs, AlP, 3C-SiC | 8 |
+| Wurtzite | GaN, AlN, InN | 4 |
+| Rocksalt | MgO | 8 |
+| Corundum | α-Al₂O₃ | 30 |
+| Cristobalite | β-SiO₂ | 24 |
+| FCC metals | Au, Cu, Ag, Al, Ni, Pt | 4 |
+| BCC metals | W, Fe, Mo | 2 |
+| Diamond cubic | Si, Ge, C, Sn | 8 |
 
-### Ternary alloys
+## Performance
 
-```python
-crystal = make_ternary_alloy(
-    base_crystal='GaAs',
-    substitute_type=2,
-    substitute_name='In',
-    fraction=0.3,           # In₀.₃Ga₀.₇As
-    which_sublattice=0,
-)
-```
+| System | Atoms/cell | Speed (traj/s) | Time for 10⁴ traj |
+|--------|-----------|----------------|-------------------|
+| GaP | 8 | ~530 | ~19 s |
+| CdTe | 8 | ~400 | ~25 s |
+| β-SiO₂ | 24 | ~250 | ~40 s |
+| α-Al₂O₃ | 30 | ~200 | ~50 s |
 
-### User-defined crystal from CIF
+Single CPU core, Intel i5 equivalent.
 
-```python
-crystal = load_cif('my_structure.cif')
-```
+## Example Scripts
 
-## Validation
-
-The code has been validated through:
-
-1. **Kinematic factors**: machine-precision agreement (< 10⁻¹⁵ relative error) for 54 ion–target pairs
-2. **Peak positions**: 3–4% agreement with kinematic predictions under normal-incidence LEIS conditions for He⁺ → Au and Cu
-3. **Statistical convergence**: 1% precision in mean backscattered energy at 5000 trajectories
-4. **Spectral shape**: reproduces characteristic LEIS features (surface peak, multiple-scattering background, thermal dechannelling)
+- `example_basic.py` — Ne⁺ → GaP at 2 keV, basic spectrum
+- `example_validation.py` — Kinematic factor verification + CaSiO₃ benchmark
+- `example_normal.py` — He⁺ → Au/Cu at normal incidence, comparison with experiment
 
 ## Citation
 
-If you use BCA_modern in your research, please cite:
+If you use BCA_modern in your work, please cite:
 
-A.S. Ashirov, BCA_modern: an open-source universal binary collision approximation code for low-energy ion scattering from crystalline surfaces, Comput. Phys. Commun. (2026).
+```
+A.S. Ashirov, U.O. Kutliev, BCA_modern: an open-source universal binary
+collision approximation code for low-energy ion scattering from crystalline
+surfaces, Computer Physics Communications (2026).
+```
 
-## Licence
+## License
 
-MIT — see LICENSE file.
+MIT License. See [LICENSE](LICENSE) for details.
 
-## Support
+## Repository
 
-For questions, bug reports, or feature requests, please use the GitHub Issues page.
+- GitHub: https://github.com/atashbek/BCA_modern
+- Zenodo: https://doi.org/10.5281/zenodo.19501756

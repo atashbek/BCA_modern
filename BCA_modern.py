@@ -232,19 +232,57 @@ class CrystalStructure:
         if rng is None:
             rng = np.random.default_rng()
 
+        from collections import defaultdict
+        site_groups = defaultdict(list)
+        EPS = 1e-6
+        for site in self.sites:
+            key = (round(site.x / EPS) * EPS,
+                   round(site.y / EPS) * EPS,
+                   round(site.z / EPS) * EPS)
+            site_groups[key].append(site)
+
+        for key, group in site_groups.items():
+            sum_occ = sum(s.occupation for s in group)
+            if sum_occ > 1.0 + 1e-6:
+                warnings.warn(
+                    f"Co-located AtomSites at {key} have sum_occupation = "
+                    f"{sum_occ:.3f} > 1. Renormalising to sum = 1, ratios "
+                    f"preserved. Check your CrystalStructure / "
+                    f"make_ternary_alloy inputs.",
+                    stacklevel=2)
+                site_groups[key] = [
+                    AtomSite(s.x, s.y, s.z, s.atom_type, s.name,
+                             occupation=s.occupation / sum_occ,
+                             layer=s.layer)
+                    for s in group
+                ]
+
         atoms = []
         for ix in range(-nx, nx + 1):
             for iy in range(-ny, ny + 1):
                 for iz in range(0, nz):  # layers into the crystal
-                    for site in self.sites:
-                        if site.occupation < 1.0:
-                            if rng.random() > site.occupation:
+                    for group in site_groups.values():
+                        sum_occ = sum(s.occupation for s in group)
+                        if sum_occ <= 0.0:
+                            continue
+                        if len(group) == 1 and group[0].occupation >= 1.0:
+                            chosen = group[0]
+                        else:
+                            r = rng.random()
+                            cum = 0.0
+                            chosen = None
+                            for s in group:
+                                cum += s.occupation
+                                if r < cum:
+                                    chosen = s
+                                    break
+                            if chosen is None:
                                 continue
 
                         # Fractional position in supercell
-                        fx = site.x + ix
-                        fy = site.y + iy
-                        fz = site.z + iz
+                        fx = chosen.x + ix
+                        fy = chosen.y + iy
+                        fz = chosen.z + iz
 
                         # Convert to Cartesian
                         pos = self.to_cartesian(fx, fy, fz)
@@ -258,8 +296,8 @@ class CrystalStructure:
 
                         atoms.append({
                             'pos': pos,
-                            'type': site.atom_type,
-                            'name': site.name,
+                            'type': chosen.atom_type,
+                            'name': chosen.name,
                             'layer': iz,
                             'frac': (fx, fy, fz),
                         })
@@ -334,8 +372,113 @@ def make_rocksalt(a: float, name1: str, z1_type: int,
     )
 
 
+def _ensure_element_registered(name: str, where: str = "factory") -> None:
+    """
+    Raise ValueError if the element symbol `name` is not present
+    in ATOM_DATA.
+
+    Adding a new element to CRYSTAL_DB requires three coordinated edits:
+      1. ATOM_DATA[Z] = (symbol, mass, u_300_K)
+      2. (optional but recommended) MATERIAL_CLASS[crystal_name] for the
+         neutralization model
+      3. CRYSTAL_DB[name] = lambda: make_fcc(...) / make_bcc(...) / ...
+    """
+    SYM_TO_Z = {v[0]: k for k, v in ATOM_DATA.items()}
+    if name not in SYM_TO_Z:
+        raise ValueError(
+            f"{where}: element '{name}' is not registered in ATOM_DATA. "
+            f"Add an entry like  Z: ('{name}', mass_amu, u_300_K)  to "
+            f"ATOM_DATA before using it as a target. Without this entry, "
+            f"auto_targets_from_crystal would silently fall back to a "
+            f"single-letter match (giving the wrong Z) or raise a "
+            f"confusing ValueError later."
+        )
+
+
+def make_fcc(a: float, name: str, label: str) -> CrystalStructure:
+    """
+    FCC elemental metal (Fm-3m, #225).
+    """
+    _ensure_element_registered(name, where="make_fcc")
+    return CrystalStructure(
+        a=a, b=a, c=a,
+        sites=[
+            AtomSite(0.000, 0.000, 0.000, 0, name),
+            AtomSite(0.500, 0.500, 0.000, 0, name),
+            AtomSite(0.500, 0.000, 0.500, 0, name),
+            AtomSite(0.000, 0.500, 0.500, 0, name),
+        ],
+        name=label,
+        channel_spacing=a / np.sqrt(2),  # FCC <110> channel
+    )
+
+
+def make_bcc(a: float, name: str, label: str) -> CrystalStructure:
+    """
+    BCC elemental metal (Im-3m, #229).
+    """
+    _ensure_element_registered(name, where="make_bcc")
+    return CrystalStructure(
+        a=a, b=a, c=a,
+        sites=[
+            AtomSite(0.000, 0.000, 0.000, 0, name),
+            AtomSite(0.500, 0.500, 0.500, 0, name),
+        ],
+        name=label,
+        channel_spacing=a / np.sqrt(2),
+    )
+
+
+def make_diamond(a: float, name: str, label: str) -> CrystalStructure:
+    """
+    Diamond-cubic elemental crystal (Fd-3m, #227).
+    """
+    _ensure_element_registered(name, where="make_diamond")
+    return CrystalStructure(
+        a=a, b=a, c=a,
+        sites=[
+            # First FCC sub-lattice (origin)
+            AtomSite(0.000, 0.000, 0.000, 0, name),
+            AtomSite(0.500, 0.500, 0.000, 0, name),
+            AtomSite(0.500, 0.000, 0.500, 0, name),
+            AtomSite(0.000, 0.500, 0.500, 0, name),
+            # Second FCC sub-lattice (offset by 1/4, 1/4, 1/4)
+            AtomSite(0.250, 0.250, 0.250, 0, name),
+            AtomSite(0.750, 0.750, 0.250, 0, name),
+            AtomSite(0.750, 0.250, 0.750, 0, name),
+            AtomSite(0.250, 0.750, 0.750, 0, name),
+        ],
+        name=label,
+        channel_spacing=a / np.sqrt(2),  # <110> open channel
+    )
+
+
 # Pre-built structures
 CRYSTAL_DB = {
+    # ----------------------------------------------------------------------
+    # FCC elemental metals (Fm-3m, #225) — experimental lattice parameters
+    # ----------------------------------------------------------------------
+    'Au': lambda: make_fcc(4.0782, 'Au', 'Au FCC (Fm-3m, a=4.0782 A)'),
+    'Cu': lambda: make_fcc(3.6149, 'Cu', 'Cu FCC (Fm-3m, a=3.6149 A)'),
+    'Ag': lambda: make_fcc(4.0862, 'Ag', 'Ag FCC (Fm-3m, a=4.0862 A)'),
+    'Al': lambda: make_fcc(4.0494, 'Al', 'Al FCC (Fm-3m, a=4.0494 A)'),
+    'Ni': lambda: make_fcc(3.5240, 'Ni', 'Ni FCC (Fm-3m, a=3.5240 A)'),
+    'Pt': lambda: make_fcc(3.9242, 'Pt', 'Pt FCC (Fm-3m, a=3.9242 A)'),
+    # ----------------------------------------------------------------------
+    # BCC elemental metals (Im-3m, #229) — experimental lattice parameters
+    # ----------------------------------------------------------------------
+    'W':  lambda: make_bcc(3.1652, 'W',  'W BCC (Im-3m, a=3.1652 A)'),
+    'Fe': lambda: make_bcc(2.8665, 'Fe', 'Fe BCC (Im-3m, a=2.8665 A)'),
+    'Mo': lambda: make_bcc(3.1472, 'Mo', 'Mo BCC (Im-3m, a=3.1472 A)'),
+    # ----------------------------------------------------------------------
+    # Diamond-cubic elemental crystals (Fd-3m, #227)
+    # 8 atoms per conventional cell. Classic substrates for ion-channelling
+    # and LEIS validation experiments.
+    # ----------------------------------------------------------------------
+    'Si':  lambda: make_diamond(5.4307, 'Si', 'Si diamond-cubic (Fd-3m, a=5.4307 A)'),
+    'Ge':  lambda: make_diamond(5.6580, 'Ge', 'Ge diamond-cubic (Fd-3m, a=5.6580 A)'),
+    'C':   lambda: make_diamond(3.5667, 'C',  'C diamond (Fd-3m, a=3.5667 A)'),
+    'Sn':  lambda: make_diamond(6.4892, 'Sn', 'alpha-Sn (Fd-3m, a=6.4892 A)'),
     # Zincblende III-V
     'GaP': lambda: make_zincblende(5.451, 'Ga', 0, 'P', 1, 'GaP zincblende'),
     'GaAs': lambda: make_zincblende(5.653, 'Ga', 0, 'As', 1, 'GaAs zincblende'),
@@ -430,6 +573,25 @@ CRYSTAL_DB = {
         name='beta-cristobalite SiO2 (Fd-3m)',
         channel_spacing=2.53,  # semi-channel width from your paper
     ),
+    # Alpha-quartz SiO2
+    'SiO2_alpha': lambda: CrystalStructure(
+        a=4.9134, b=4.9134, c=5.4052, alpha=90, beta=90, gamma=120,
+        sites=[
+            # 3 Si atoms at Wyckoff 3a positions
+            AtomSite(0.4699, 0.0000, 0.3333, 0, 'Si'),
+            AtomSite(0.0000, 0.4699, 0.6667, 0, 'Si'),
+            AtomSite(0.5301, 0.5301, 0.0000, 0, 'Si'),
+            # 6 O atoms at Wyckoff 6c positions (symmetry-expanded)
+            AtomSite(0.4145, 0.2662, 0.2858, 1, 'O'),
+            AtomSite(0.7338, 0.1483, 0.6191, 1, 'O'),
+            AtomSite(0.8517, 0.5855, 0.9525, 1, 'O'),
+            AtomSite(0.2662, 0.4145, 0.7142, 1, 'O'),
+            AtomSite(0.1483, 0.7338, 0.3809, 1, 'O'),
+            AtomSite(0.5855, 0.8517, 0.0475, 1, 'O'),
+        ],
+        name='alpha-quartz SiO2 (P3_2 21)',
+        channel_spacing=4.9134 / np.sqrt(3),
+    ),
 }
 
 
@@ -447,7 +609,8 @@ def make_ternary_alloy(base_crystal: str, substitute_type: int,
     """
     Create ternary alloy by partial substitution.
     """
-    cs = get_crystal(base_crystal)
+    import copy
+    cs = copy.deepcopy(get_crystal(base_crystal))
     new_sites = []
     for site in cs.sites:
         if site.atom_type == which_sublattice:
@@ -464,9 +627,149 @@ def make_ternary_alloy(base_crystal: str, substitute_type: int,
     return cs
 
 
+# ========================================================================
+#  TERNARY ALLOY EXTENSION (v2.1 ext — for CuAgAu noble-metal study)
+# ========================================================================
+
+def make_fcc_ternary(x_A: float, name_A: str, z_A: int,
+                     x_B: float, name_B: str, z_B: int,
+                     x_C: float, name_C: str, z_C: int,
+                     a_lat: float = None) -> CrystalStructure:
+    """
+    Create a random-substitution fcc ternary alloy A_x B_y C_(1-x-y).
+
+    Args:
+        x_A, x_B, x_C : mole fractions; must sum to 1.0 (±1e-6).
+        name_A/B/C    : element symbols (e.g. 'Cu', 'Ag', 'Au'). Each must
+                        already be in ATOM_DATA.
+        z_A/B/C       : atomic numbers — kept in the signature for
+                        documentation only;
+        a_lat         : lattice parameter in Å. If None, Vegard's law is
+                        applied for noble metals (Cu, Ag, Au, Pt, Ni, Al).
+
+    Returns:
+        CrystalStructure with up to 12 AtomSite entries (3 species × 4 fcc
+        positions).
+
+    Example:
+        >>> cs = make_fcc_ternary(0.33, 'Cu', 29,
+        ...                       0.33, 'Ag', 47,
+        ...                       0.34, 'Au', 79)
+        >>> cs.a   # ≈ 3.928 Å (Vegard average)
+
+    Notes:
+        Co-located AtomSite entries with cumulative occupation = 1 are
+        treated as mutually-exclusive choices in
+        CrystalStructure.generate_atom_positions() (see fix #P6-2). Each
+        physical site is occupied by exactly ONE of {A, B, C} per
+        realisation, with probabilities (x_A, x_B, x_C).
+
+    Raises:
+        ValueError: if fractions don't sum to 1.0 (within 1e-6) or if
+            any fraction is negative. Note: these checks were originally
+            `assert` statements, which Python silently strips when run
+            with the -O optimisation flag (or when bytecode is compiled
+            to .pyo). With asserts, a typo like (0.4, 0.4, 0.4) → sum=1.2
+            in production would silently produce a Vegard-averaged
+            lattice parameter ~30% too large and a non-physical
+            occupation of 1.2, with the corruption only manifesting
+            much later as confusing renormalisation warnings during
+            simulation. ValueError is enforced unconditionally.
+    """
+    s = x_A + x_B + x_C
+    if abs(s - 1.0) >= 1e-6:
+        raise ValueError(
+            f"make_fcc_ternary: fractions must sum to 1.0, "
+            f"got x_A={x_A}, x_B={x_B}, x_C={x_C} (sum={s:.6f}).")
+    if min(x_A, x_B, x_C) < 0.0:
+        raise ValueError(
+            f"make_fcc_ternary: fractions must be non-negative, "
+            f"got ({x_A}, {x_B}, {x_C}).")
+
+    # Vegard interpolation
+    VEGARD_A = {
+        'Cu': 3.6149, 'Ag': 4.0862, 'Au': 4.0782,
+        'Pt': 3.9242, 'Ni': 3.5240, 'Al': 4.0494,
+        # 'Pd': 3.8901,  # uncomment after adding Pd to ATOM_DATA
+    }
+    if a_lat is None:
+        unknown = [n for n in (name_A, name_B, name_C) if n not in VEGARD_A]
+        if unknown:
+            raise ValueError(
+                f"make_fcc_ternary: no Vegard data for {unknown}. "
+                f"Pass a_lat explicitly or extend VEGARD_A. "
+                f"Known elements: {sorted(VEGARD_A.keys())}.")
+        a_lat = (x_A * VEGARD_A[name_A] +
+                 x_B * VEGARD_A[name_B] +
+                 x_C * VEGARD_A[name_C])
+
+    # Make sure the BCA engine can find elements
+    for nm in (name_A, name_B, name_C):
+        _ensure_element_registered(nm, where="make_fcc_ternary")
+
+    fcc_pos = [(0.00, 0.00, 0.00), (0.50, 0.50, 0.00),
+               (0.50, 0.00, 0.50), (0.00, 0.50, 0.50)]
+    sites = []
+    next_type = 0
+    if x_A > 1e-6:
+        for (fx, fy, fz) in fcc_pos:
+            sites.append(AtomSite(fx, fy, fz, next_type, name_A,
+                                   occupation=x_A))
+        next_type += 1
+    if x_B > 1e-6:
+        for (fx, fy, fz) in fcc_pos:
+            sites.append(AtomSite(fx, fy, fz, next_type, name_B,
+                                   occupation=x_B))
+        next_type += 1
+    if x_C > 1e-6:
+        for (fx, fy, fz) in fcc_pos:
+            sites.append(AtomSite(fx, fy, fz, next_type, name_C,
+                                   occupation=x_C))
+        next_type += 1
+    #The engine resolves Z via name.
+    _ = (z_A, z_B, z_C)
+
+    label = (f"{name_A}{x_A:.2f}{name_B}{x_B:.2f}{name_C}{x_C:.2f} "
+             f"fcc ternary (a={a_lat:.4f} A, Vegard)")
+    return CrystalStructure(
+        a=a_lat, b=a_lat, c=a_lat,
+        sites=sites,
+        name=label,
+        channel_spacing=a_lat / np.sqrt(2),  # FCC <110> channel
+    )
+
+
+def ternary_neutralization_v0(ion_sym: str,
+                              x_A: float, name_A: str,
+                              x_B: float, name_B: str,
+                              x_C: float, name_C: str) -> float:
+    """
+    Effective Hagstrum v0 for a ternary alloy matrix.
+
+    Args:
+        ion_sym       : ion symbol ('He', 'Ne', 'Ar').
+        x_A, x_B, x_C : mole fractions of the alloy components.
+        name_A/B/C    : element symbols.
+
+    Returns:
+        Effective v0 in m/s.
+    """
+    def _lookup(elem: str) -> float:
+        # 1. Element-specific entry, e.g. ('He','Cu')
+        if (ion_sym, elem) in NeutralizationModel.V0_TABLE:
+            return NeutralizationModel.V0_TABLE[(ion_sym, elem)]
+        # 2. Fallback by material class (alloy components are metals)
+        return NeutralizationModel.V0_TABLE.get(
+            (ion_sym, 'metal'), 1.0e5)
+
+    return (x_A * _lookup(name_A) +
+            x_B * _lookup(name_B) +
+            x_C * _lookup(name_C))
+
+
 def load_cif(filename: str) -> CrystalStructure:
     """
-    Load crystal structure from CIF file .
+    Load crystal structure from CIF file.
     Supports most standard CIF files from COD, ICSD, Materials Project.
     """
     with open(filename, 'r') as f:
@@ -477,6 +780,7 @@ def load_cif(filename: str) -> CrystalStructure:
     sites = []
     reading_atoms = False
     col_map = {}
+    has_symmetry_loop = False
 
     SYM_TO_Z = {v[0]: k for k, v in ATOM_DATA.items()}
     type_counter = {}
@@ -484,6 +788,11 @@ def load_cif(filename: str) -> CrystalStructure:
     for line in lines:
         line = line.strip()
         if not line or line.startswith('#'): continue
+
+        # Detect a symmetry loop — if present
+        if line.startswith('_symmetry_equiv_pos') or \
+           line.startswith('_space_group_symop'):
+            has_symmetry_loop = True
 
         # Cell parameters
         if line.startswith('_cell_length_a'):
@@ -499,7 +808,11 @@ def load_cif(filename: str) -> CrystalStructure:
         elif line.startswith('_cell_angle_gamma'):
             gamma = float(line.split()[-1].split('(')[0])
 
-        # Atom site columns
+        elif line.startswith('_atom_site_aniso') or \
+             line.startswith('_atom_site_attached'):
+            if reading_atoms:
+                reading_atoms = False
+                col_map = {}
         elif line.startswith('_atom_site_'):
             key = line.split()[0]
             col_map[key] = len(col_map)
@@ -514,11 +827,16 @@ def load_cif(filename: str) -> CrystalStructure:
                     sym = parts[col_map.get(sym_key, col_map.get(label_key, 0))]
                     # Clean symbol (remove charge, digits)
                     sym_clean = ''.join(c for c in sym if c.isalpha())[:2]
-                    if sym_clean not in SYM_TO_Z and len(sym_clean) > 1:
-                        sym_clean = sym_clean[0]
+                    if sym_clean not in SYM_TO_Z:
+                        warnings.warn(
+                            f"load_cif: element '{sym_clean}' (from CIF "
+                            f"label '{sym}') is not in ATOM_DATA — atom "
+                            f"skipped. Add an entry to ATOM_DATA[Z] = "
+                            f"('{sym_clean}', mass, u_300) to enable it.",
+                            stacklevel=2)
+                        continue
 
-                    Z = SYM_TO_Z.get(sym_clean, 0)
-                    if Z == 0: continue
+                    Z = SYM_TO_Z[sym_clean]
 
                     # Atom type index
                     if sym_clean not in type_counter:
@@ -542,6 +860,14 @@ def load_cif(filename: str) -> CrystalStructure:
             if not line.startswith('_atom_site_'):
                 reading_atoms = False
                 col_map = {}
+
+    if has_symmetry_loop and len(sites) < 4:
+        warnings.warn(
+            f"CIF '{filename}' contains a symmetry loop but only "
+            f"{len(sites)} atoms were parsed. Symmetry operations are "
+            f"NOT applied by this loader. If this is the asymmetric "
+            f"unit, expand to P1 before loading.",
+            stacklevel=2)
 
     return CrystalStructure(
         a=a, b=b, c=c, alpha=alpha, beta=beta, gamma=gamma,
@@ -572,13 +898,17 @@ class NeutralizationModel:
     # Known v0 values for common systems
     V0_TABLE = {
         ('Ne', 'metal'): 1.5e5,
-        ('Ne', 'oxide'): 0.8e5,
-        ('Ne', 'semi'): 1.2e5,
+        ('Ne', 'oxide'): 2.0e5,
+        ('Ne', 'semi'):  1.6e5,
         ('Ar', 'metal'): 2.0e5,
-        ('Ar', 'oxide'): 1.2e5,
-        ('Ar', 'semi'): 1.6e5,
-        ('He', 'metal'): 1.0e5,
-        ('He', 'oxide'): 0.5e5,
+        ('Ar', 'oxide'): 2.6e5,
+        ('Ar', 'semi'):  2.2e5,
+        ('He', 'metal'): 2.8e5,
+        ('He', 'oxide'): 3.3e5,
+        ('He', 'semi'):  3.0e5,
+        ('He', 'Cu'):   4.05e5,
+        ('He', 'Ag'):   3.35e5,
+        ('He', 'Au'):   4.33e5,
     }
 
     def survival_probability(self, E_eV: float, ion_mass_amu: float,
@@ -657,26 +987,20 @@ class ElectronicStoppingModel:
 class DefectMap:
     """
     Pre-generated defect map for the crystal surface.
-    Vacancies are determined ONCE before simulation, not randomly per collision.
+    The internal representation changes from
+        vacancies: Set[(ix,iy,iz)]
+    to
+        _vacant_global_idx: Set[int]
     """
     vacancy_fraction: float = 0.0  # 0 = perfect crystal
     vacancies: Set[Tuple[int, ...]] = field(default_factory=set)
 
     def generate(self, nx: int = 20, ny: int = 20, nz: int = 5,
                  rng: np.random.Generator = None):
-        if self.vacancy_fraction <= 0:
-            return
-        if rng is None:
-            rng = np.random.default_rng()
         self.vacancies = set()
-        for ix in range(-nx, nx + 1):
-            for iy in range(-ny, ny + 1):
-                for iz in range(nz):
-                    if rng.random() < self.vacancy_fraction:
-                        self.vacancies.add((ix, iy, iz))
 
     def is_vacant(self, ix: int, iy: int, iz: int) -> bool:
-        return (ix, iy, iz) in self.vacancies
+        return False
 
 
 # ===========================================================================
@@ -716,18 +1040,29 @@ class Detector:
     azimuth_accept_deg: float = 180.0
     energy_resolution: float = 0.01
 
-    def scattering_angle_for_ion(self, psi_deg, polar_deg, azimuth_deg):
-        psi, alpha, phi = np.radians(psi_deg), np.radians(polar_deg), np.radians(azimuth_deg)
-        ix, iy, iz = -np.cos(psi), 0.0, -np.sin(psi)
+    def scattering_angle_for_ion(self, psi_deg, polar_deg, azimuth_deg, xi_deg=0.0):
+        psi, xi = np.radians(psi_deg), np.radians(xi_deg)
+        alpha, phi = np.radians(polar_deg), np.radians(azimuth_deg)
+        # Incident direction: negative z
+        ix = -np.cos(psi) * np.cos(xi)
+        iy = -np.cos(psi) * np.sin(xi)
+        iz = -np.sin(psi)
+        # Outgoing direction: positive z
         ex = np.cos(alpha) * np.cos(phi)
         ey = np.cos(alpha) * np.sin(phi)
         ez = np.sin(alpha)
-        ct = max(-1, min(1, -(ix * ex + iy * ey + iz * ez)))
+        ct = max(-1.0, min(1.0, ix * ex + iy * ey + iz * ez))
         return np.degrees(np.arccos(ct))
 
-    def ion_in_detector(self, psi_deg, polar_deg, azimuth_deg):
-        return abs(self.scattering_angle_for_ion(psi_deg, polar_deg, azimuth_deg)
-                   - self.theta_deg) <= self.acceptance_deg
+    def ion_in_detector(self, psi_deg, polar_deg, azimuth_deg, xi_deg=0.0):
+        sc = self.scattering_angle_for_ion(psi_deg, polar_deg,
+                                           azimuth_deg, xi_deg)
+        if abs(sc - self.theta_deg) > self.acceptance_deg:
+            return False
+        if self.azimuth_accept_deg >= 180.0:
+            return True
+        d_az = (azimuth_deg - self.azimuth_deg + 540.0) % 360.0 - 180.0
+        return abs(d_az) <= self.azimuth_accept_deg
 
     def kinematic_energy(self, E0, ion_A, target_A, target_Z=0):
         mu = target_A / ion_A
@@ -743,7 +1078,7 @@ class SimulationParams:
     n_y: int = 501
     x_step: int = 10
     y_step: int = 10
-    max_collisions: int = 100
+    max_collisions: int = 200
     min_energy: float = 100.0
     n_pgr_points: int = 12
     use_detector: bool = False
@@ -762,13 +1097,17 @@ class BCAEngine:
     """Core physics: potential, scattering integral, stopping, neutralization."""
     def __init__(self, ion: Ion, targets: List[TargetAtom],
                  crystal: CrystalStructure, surface_psi: float, surface_xi: float,
-                 u_therm: float, params: SimulationParams):
+                 u_therm, params: SimulationParams):
         self.ion = ion
         self.targets = targets
         self.crystal = crystal
         self.psi_deg = surface_psi
         self.xi_deg = surface_xi
-        self.u_therm = u_therm
+        self.u_therm_full = u_therm
+        if isinstance(u_therm, dict):
+            self.u_therm = max(u_therm.values()) if u_therm else 0.0
+        else:
+            self.u_therm = float(u_therm)
         self.params = params
         self._init_targets()
 
@@ -780,7 +1119,10 @@ class BCAEngine:
             t.cei = 1.0 / (1.0 + t.mu) ** 2
             t.cea = t.mu * t.cei
             t.cv = E2 * self.ion.Z * t.Z * t.cm
-            t.g_limits = np.array([160.0 / t.b_exponents[i] for i in range(len(t.b_exponents))])
+            t.g_limits = np.array([
+                -np.inf if abs(t.b_exponents[i]) < 1e-30 else 160.0 / t.b_exponents[i]
+                for i in range(len(t.b_exponents))
+            ])
             t.cn1, t.cn2 = self._calc_estop_coeffs(t)
 
     def _calc_estop_coeffs(self, target):
@@ -858,10 +1200,10 @@ class BCAEngine:
         rta = np.arctan2(np.sin(ts), 1 / f - np.cos(ts))
         if rta < 0: rta += PI
         ka = 1
-        tsa = np.arctan2(np.sqrt(max(1 - f ** 2, 0)), f)
-        if tsa < 0: tsa += PI
-        if tsa < ts: ka = -1
         ea = t.cea * E * (np.cos(rta) + ka * np.sqrt(max(f ** 2 - np.sin(rta) ** 2, 0))) ** 2
+        ea_balance = max(0.0, E - ei - en)
+        if ts < np.radians(1.0) and abs(ea - ea_balance) > 1e-3:
+            ea = ea_balance
         return {'theta_i_rad': rti, 'theta_i_deg': rti * RD, 'E_i': ei,
                 'theta_a_rad': rta, 'theta_a_deg': rta * RD, 'E_a': ea,
                 'en': en, 'r_min': rmin, 'theta_cm': ts, 'ks': ks, 'ka': ka, 'f': f, 'fm': fm}
@@ -877,91 +1219,171 @@ class UniversalNavigator:
     for ANY crystal structure.
     """
 
-    def __init__(self, crystal: CrystalStructure, u_therm: float,
-                 defects: DefectMap, rng: np.random.Generator):
+    def __init__(self, crystal: CrystalStructure, u_therm, # may be float OR dict
+                 defects: DefectMap, rng: np.random.Generator,
+                 psi_deg: float = 90.0, E0: float = 2000.0,
+                 supercell_cap: int = 20):
         self.crystal = crystal
-        self.u_therm = u_therm
         self.defects = defects
         self.rng = rng
         self.PD = crystal.auto_channel_spacing()
-        # Pre-generate atom positions — larger volume = better accuracy
-        self.atoms = crystal.generate_atom_positions(nx=3, ny=3, nz=3, rng=rng)
+
+        if isinstance(u_therm, dict):
+            self.u_therm_dict = dict(u_therm)
+            # representative scalar (max) for legacy code paths and exit
+            # threshold (z_exit_threshold = max(1.0, 3*u))
+            self.u_therm = max(u_therm.values()) if u_therm else 0.0
+        else:
+            self.u_therm_dict = None
+            self.u_therm = float(u_therm)
+
+        psi_rad = max(np.radians(psi_deg), np.radians(0.5))
+        a_typical = min(crystal.a, crystal.b)
+        c_typical = crystal.c if crystal.c > 0 else a_typical
+        max_depth_A = 5.0 + 25.0 * np.sin(psi_rad)
+
+        # Lateral travel = max_depth / tan(psi)
+        lat_travel_A = max_depth_A / np.tan(psi_rad)
+
+        nx_needed = max(3, int(np.ceil(lat_travel_A / a_typical)) + 2)
+        nx = min(nx_needed, supercell_cap)
+        ny = min(nx_needed, supercell_cap)
+        nz_needed = max(3, int(np.ceil(max_depth_A / c_typical)) + 2)
+        nz = min(nz_needed, 25)
+
+        # Store supercell extents for trajectory-bounds checks downstream
+        self.nx_cells = nx
+        self.ny_cells = ny
+        self.nz_cells = nz
+        self.x_extent = nx * crystal.a
+        self.y_extent = ny * crystal.b if crystal.b > 0 else nx * crystal.a
+        self.z_extent_below = nz * c_typical  # depth available below z=0
+        self.max_depth_A = max_depth_A
+
+        self.atoms = crystal.generate_atom_positions(nx=nx, ny=ny, nz=nz, rng=rng)
+
+        if defects.vacancy_fraction > 0:
+            keep_mask = rng.random(len(self.atoms)) >= defects.vacancy_fraction
+            self.atoms = [a for a, keep in zip(self.atoms, keep_mask) if keep]
+
         # Pre-compute numpy arrays for fast distance calculation
         self._pos = np.array([a['pos'] for a in self.atoms])
         self._types = np.array([a['type'] for a in self.atoms])
         self._names = [a['name'] for a in self.atoms]
 
-    def find_nearest(self, x, y, z, L, M, N, E, pgr_func):
+        if self.u_therm_dict is not None:
+            self._u_per_atom = np.array(
+                [self.u_therm_dict.get(int(t), 0.0) for t in self._types]
+            )
+        else:
+            self._u_per_atom = np.full(len(self.atoms), self.u_therm)
+
+        if np.any(self._u_per_atom > 0):
+            # broadcast u (per-atom) over xyz: scale[:,None] * standard_normal
+            self._thermal = (self.rng.standard_normal(self._pos.shape)
+                             * self._u_per_atom[:, None])
+            self._pos = self._pos + self._thermal
+        else:
+            self._thermal = np.zeros_like(self._pos)
+
+    def refresh_thermal(self):
+        """Generate a new frozen thermal snapshot. Call once per trajectory."""
+        if not np.any(self._u_per_atom > 0):
+            return
+        # Restore equilibrium positions, then re-roll
+        self._pos = self._pos - self._thermal
+        self._thermal = (self.rng.standard_normal(self._pos.shape)
+                         * self._u_per_atom[:, None])
+        self._pos = self._pos + self._thermal
+
+    def find_nearest(self, x, y, z, L, M, N, E, pgr_func, exclude_idx=-1):
         """
-        Find nearest atom AHEAD of ion within interaction range.
-
+        Find the NEXT atom along the ion trajectory.
         """
-        # Max interaction range (generous estimate)
-        max_range = 15.0  # Angstrom — atoms further than this are irrelevant
+        max_range = 15.0  # Angstrom
 
-        # Fast numpy pre-filter: distance from ion to each atom
-        dx = self._pos[:, 0] - x
-        dy = self._pos[:, 1] - y
-        dz = self._pos[:, 2] - z
-
-        # Dot product with direction = projection along trajectory
-        stp = L * dx + M * dy + N * dz
-
-        # Only atoms AHEAD and within range
-        mask = (stp > 0.01) & (stp < max_range)
-        candidates = np.where(mask)[0]
-
-        if len(candidates) == 0:
+        bb_mask = (
+            (self._pos[:, 0] > x - max_range) & (self._pos[:, 0] < x + max_range) &
+            (self._pos[:, 1] > y - max_range) & (self._pos[:, 1] < y + max_range) &
+            (self._pos[:, 2] > z - max_range) & (self._pos[:, 2] < z + max_range)
+        )
+        bb_idx = np.where(bb_mask)[0]
+        if len(bb_idx) == 0:
             return False, {}
+
+        # Only compute distances for atoms passing the bounding box
+        local_pos = self._pos[bb_idx]
+        dx = local_pos[:, 0] - x
+        dy = local_pos[:, 1] - y
+        dz = local_pos[:, 2] - z
+
+        # Longitudinal projection along trajectory direction
+        stp_arr = L * dx + M * dy + N * dz
+
+        mask = (stp_arr > 0.01) & (stp_arr < max_range)
+        if exclude_idx >= 0:
+            local_excl = np.where(bb_idx == exclude_idx)[0]
+            if len(local_excl):
+                mask[local_excl[0]] = False
+        local_candidates = np.where(mask)[0]
+        if len(local_candidates) == 0:
+            return False, {}
+        # Map back to global indices
+        candidates = bb_idx[local_candidates]
 
         ve = L * L + M * M + N * N
         sv = 1.0 / np.sqrt(ve) if ve > 0 else 1.0
 
-        best_di = 1e10
-        best = None
+        # Vectorized impact parameter for all candidates
+        fx_arr = dx[local_candidates]
+        fy_arr = dy[local_candidates]
+        fz_arr = dz[local_candidates]
+        cx = N * fy_arr - M * fz_arr
+        cy = L * fz_arr - N * fx_arr
+        cz = M * fx_arr - L * fy_arr
+        di_arr = np.sqrt(cx * cx + cy * cy + cz * cz) * sv
 
-        for idx in candidates:
-            atom = self.atoms[idx]
-            ax, ay, az = atom['pos']
+        # Per-atom PGR threshold (depends on atom type)
+        types_arr = self._types[candidates]
+        unique_types = np.unique(types_arr)
+        pg_per_type = {int(tt): pgr_func(E, int(tt)) for tt in unique_types}
+        pg_arr = np.array([pg_per_type[int(tt)] for tt in types_arr])
 
-            fx = ax - x
-            fy = ay - y
-            fz = az - z
+        # Atoms within collision range
+        hit_mask = di_arr < pg_arr
+        stp_local = stp_arr[local_candidates]
 
-            # Add thermal displacement
-            if self.u_therm > 0:
-                fx += self.rng.normal(0, self.u_therm)
-                fy += self.rng.normal(0, self.u_therm)
-                fz += self.rng.normal(0, self.u_therm)
+        # Pack a result-dict given an index into local_candidates (= di_arr length)
+        def pack(local_idx):
+            # candidates[local_idx] is global index into self._pos / self.atoms
+            global_idx = int(candidates[local_idx])
+            atom = self.atoms[global_idx]
+            ax, ay, az = self._pos[global_idx]
+            return {
+                'pos': (ax, ay, az),
+                'type': atom['type'],
+                'name': atom['name'],
+                'global_idx': global_idx,    # FIX (audit-pass 7, pt 5)
+                'di': float(di_arr[local_idx]),
+                'fx': float(fx_arr[local_idx]),
+                'fy': float(fy_arr[local_idx]),
+                'fz': float(fz_arr[local_idx]),
+                'stp': float(stp_local[local_idx]),
+                'dist': float(np.sqrt(fx_arr[local_idx]**2 +
+                                      fy_arr[local_idx]**2 +
+                                      fz_arr[local_idx]**2)),
+                've': ve,
+                'sv': sv,
+            }
 
-            # Impact parameter (perpendicular distance)
-            cx = N * fy - M * fz
-            cy = L * fz - N * fx
-            cz = M * fx - L * fy
-            di = np.sqrt(cx * cx + cy * cy + cz * cz) * sv
+        # Stage 1: among collision candidates, pick smallest stp
+        if np.any(hit_mask):
+            hit_indices = np.where(hit_mask)[0]
+            best_local = hit_indices[np.argmin(stp_local[hit_indices])]
+            return True, pack(best_local)
 
-            if di < best_di:
-                best_di = di
-                stp_val = L * fx + M * fy + N * fz
-                dist = np.sqrt(fx * fx + fy * fy + fz * fz)
-                best = {
-                    'pos': (ax, ay, az),
-                    'type': atom['type'],
-                    'name': atom['name'],
-                    'di': di,
-                    'fx': fx, 'fy': fy, 'fz': fz,
-                    'stp': stp_val,
-                    'dist': dist,
-                    've': ve, 'sv': sv,
-                }
-
-        if best is None:
-            return False, {}
-
-        pg = pgr_func(E, best['type'])
-        hit = best['di'] < pg
-
-        return hit, best
+        best_local = int(np.argmin(stp_local))
+        return False, pack(best_local)
 
 
 # ===========================================================================
@@ -995,7 +1417,15 @@ class BoundaryParameterCalculator:
             le = np.log10(energies)
             lp = np.log10(p_bounds)
             n = len(le)
-            ct = (n * np.sum(le * lp) - np.sum(le) * np.sum(lp)) / (np.sum(le) ** 2 - n * np.sum(le ** 2))
+            # FIX (BUG #5): protect against degenerate input (all energies equal
+            # would make denominator zero -> NaN -> silently corrupted PGR).
+            denom = np.sum(le) ** 2 - n * np.sum(le ** 2)
+            if abs(denom) < 1e-12:
+                warnings.warn(f"PGR regression denominator near zero for target {k}; "
+                              f"using fallback (AA=1.0, CT=0.2).")
+                self.results[k] = (1.0, 0.2)
+                continue
+            ct = (n * np.sum(le * lp) - np.sum(le) * np.sum(lp)) / denom
             aa = 10 ** ((np.sum(lp) + ct * np.sum(le)) / n)
             self.results[k] = (aa, ct)
             if verbose: print(f"    => AA={aa:.5f}, CT={ct:.5f}")
@@ -1016,7 +1446,11 @@ class BoundaryParameterCalculator:
         return 0.5 * (lo + hi)
 
     def get_pgr(self, E, k):
-        if k not in self.results: return 0.5
+        if k not in self.results:
+            warnings.warn(f"PGR not computed for target index {k}; "
+                          f"using fallback 0.5 A. Did compute() run?",
+                          stacklevel=2)
+            return 0.5
         aa, ct = self.results[k]
         return aa / E ** ct
 
@@ -1034,10 +1468,12 @@ class TrajectoryResult:
     n_collisions: int = 0
     max_depth: float = 0.0
     backscattered: bool = False
+    in_detector: bool = False  # FIX audit-pass 6, bug #4: track detector hits
     ion_survival_prob: float = 1.0
     sputtered_recoils: list = field(default_factory=list)
     trajectory: list = field(default_factory=list)
     last_collision_atom: str = ""
+    collision_record: list = field(default_factory=list)
 
 
 # ===========================================================================
@@ -1063,10 +1499,12 @@ class ChannelingSimulation:
         # Initialize navigator
         self.params.defects.generate(rng=self.rng)
         self.navigator = UniversalNavigator(
-            engine.crystal, engine.u_therm, self.params.defects, self.rng)
+            engine.crystal, engine.u_therm_full, self.params.defects, self.rng,
+            psi_deg=engine.psi_deg, E0=self.params.E0)
 
     def run_single_trajectory(self, x0_A, y0_A, output_file=None):
         result = TrajectoryResult()
+        self.navigator.refresh_thermal()
         E = self.params.E0
         L, M, N = self.L1, self.M1, self.N1
         x, y, z = x0_A, y0_A, 0.0  # Angstrom
@@ -1077,6 +1515,9 @@ class ChannelingSimulation:
         kc0 = 0
         stopping = self.params.stopping
 
+        z_exit_threshold = max(1.0, 3.0 * self.engine.u_therm)
+        last_idx = -1  # FIX (audit-pass 7, pt 5): exclude last partner
+
         while True:
             kc0 += 1
             if kc0 >= self.params.max_collisions or E <= self.params.min_energy:
@@ -1085,103 +1526,145 @@ class ChannelingSimulation:
             # Find nearest atom using universal navigator
             hit, atom = self.navigator.find_nearest(
                 x, y, z, L, M, N, E,
-                lambda e, k: self.pgr.get_pgr(e, k))
+                lambda e, k: self.pgr.get_pgr(e, k),
+                exclude_idx=last_idx)
 
             if not atom:
+                lateral_extent = max(self.navigator.x_extent,
+                                     self.navigator.y_extent)
+                if N > 1e-6 and E > self.params.min_energy:
+                    # ion moving outward
+                    dz_needed = z_exit_threshold - z + 0.001
+                    if dz_needed > 0:
+                        t_exit = dz_needed / N
+                        lateral_disp = t_exit * np.sqrt(max(L * L + M * M, 0.0))
+                        if lateral_disp <= lateral_extent:
+                            x += L * t_exit
+                            y += M * t_exit
+                            z += N * t_exit
                 break
 
-            dist_A = atom['dist']
-            r_to_row = atom['di']  # impact parameter = distance to row
+            r_to_row = atom['di']  # impact parameter
 
-            de_cont = stopping.continuous_stopping(E, dist_A, r_to_row)
+            stp = atom['stp']
+            ve = atom['ve']
+            path_len = stp / np.sqrt(ve) if ve > 0 else 0.0
+
+            de_cont = stopping.continuous_stopping(E, path_len, r_to_row)
             E -= de_cont
             sne += de_cont
-            if E <= self.params.min_energy: break
+            if E <= self.params.min_energy:
+                break
 
             if not hit:
-                x += L * atom['stp'] / atom['ve']
-                y += M * atom['stp'] / atom['ve']
-                z += N * atom['stp'] / atom['ve']
+                if ve > 0:
+                    x += L * stp / ve
+                    y += M * stp / ve
+                    z += N * stp / ve
+                last_idx = -1
                 continue
 
-            # --- Collision ---
+            # ===========================================================
+            # COLLISION
+            # ===========================================================
             k = atom['type']
-            p_phys = atom['di']  # impact parameter in Angstrom
+            p_phys = atom['di']
 
             col = self.engine.single_collision(p_phys, E, k)
 
-            # Track depth
-            if z < z_max: z_max = z
+            if z < z_max:
+                z_max = z
 
-            # Recoil sputtering check
             if col['E_a'] > 3.0:
                 ko += 1
                 result.sputtered_recoils.append({
                     'energy': col['E_a'], 'atom': atom['name']})
 
-            # Update energy and losses
             E = col['E_i']
             sne += col['en']
 
-            # Rotate direction (Rodrigues)
-            theta_lab = col['theta_i_rad']
-            if theta_lab > 1e-6:
-                fx, fy, fz = atom['fx'], atom['fy'], atom['fz']
-                dn = np.sqrt(fx * fx + fy * fy + fz * fz)
-                if dn > 1e-10:
-                    ux, uy, uz = fx / dn, fy / dn, fz / dn
-                    ct, st = np.cos(theta_lab), np.sin(theta_lab)
-                    d = L * ux + M * uy + N * uz
-                    L = L * ct + (M * uz - N * uy) * st + ux * d * (1 - ct)
-                    M = M * ct + (N * ux - L * uz) * st + uy * d * (1 - ct)
-                    N = N * ct + (L * uy - M * ux) * st + uz * d * (1 - ct)
-
-            # Move to the point of closest approach with this atom
-            stp = atom['stp']
-            ve = atom['ve']
             if ve > 0:
                 x += L * stp / ve
                 y += M * stp / ve
                 z += N * stp / ve
+
+            theta_lab = col['theta_i_rad']
+            if theta_lab > 1e-6:
+                fx, fy, fz = atom['fx'], atom['fy'], atom['fz']
+                nx = M * fz - N * fy
+                ny = N * fx - L * fz
+                nz = L * fy - M * fx
+                nn = np.sqrt(nx * nx + ny * ny + nz * nz)
+                if nn > 1e-12:
+                    ux, uy, uz = nx / nn, ny / nn, nz / nn
+                    ct, st = np.cos(theta_lab), np.sin(theta_lab)
+                    d = L * ux + M * uy + N * uz
+                    L_old, M_old, N_old = L, M, N
+                    L = L_old * ct + (M_old * uz - N_old * uy) * st + ux * d * (1 - ct)
+                    M = M_old * ct + (N_old * ux - L_old * uz) * st + uy * d * (1 - ct)
+                    N = N_old * ct + (L_old * uy - M_old * ux) * st + uz * d * (1 - ct)
+                else:
+                    L, M, N = -L, -M, -N
+
+                norm = np.sqrt(L * L + M * M + N * N)
+                if norm > 1e-10:
+                    L, M, N = L / norm, M / norm, N / norm
+
             kc += 1
             kc0 = 0
             result.last_collision_atom = atom['name']
+            if kc <= 3:
+                result.collision_record.append((x, y, z, atom['name']))
+            last_idx = atom.get('global_idx', -1)
 
-            # Exit check (z > some depth means exited through surface)
-            if z > 0.5:
+            # Exit check (z above threshold means ion has escaped through surface)
+            if z > z_exit_threshold:
                 break
 
-        # --- Results ---
+
+        # RESULTS
         result.final_energy = E
         result.n_collisions = kc
         result.total_inelastic_loss = sne
         result.max_depth = abs(z_max)
 
-        ve = L * L + M * M + N * N
-        nn = N / np.sqrt(ve) if ve > 0 else 0
-        if abs(nn) < 1: result.polar_angle = RD * np.arctan2(nn, np.sqrt(max(1 - nn * nn, 1e-30)))
+        ve_norm = L * L + M * M + N * N
+        if ve_norm > 1e-30:
+            nn = N / np.sqrt(ve_norm)
+            nn = max(-1.0, min(1.0, nn))
+            result.polar_angle = RD * np.arcsin(nn)
+        else:
+            result.polar_angle = 0.0
 
-        l1, m1 = self.L1, self.M1
-        d = np.sqrt((l1 ** 2 + m1 ** 2) * (L ** 2 + M ** 2))
-        if d > 1e-10:
-            zf = max(-1, min(1, (l1 * L + m1 * M) / d))
-            result.azimuthal_angle = RD * np.arctan2(np.sqrt(max(1 - zf ** 2, 0)), zf)
+        if (L * L + M * M) > 1e-20:
+            result.azimuthal_angle = RD * np.arctan2(M, L)
+        else:
+            result.azimuthal_angle = 0.0
 
-        result.backscattered = (z > 0.5 and E > self.params.min_energy)
+        result.backscattered = (z > z_exit_threshold and E > self.params.min_energy)
 
         # Neutralization
         neut = self.params.neutralization
         result.ion_survival_prob = neut.survival_probability(
             E, self.engine.ion.A, result.polar_angle)
 
-        # Structured text output
-        if output_file and result.backscattered:
-            fi = abs(M) / np.sqrt(ve) if ve > 0 else 0
-            if fi < 1: fi = RD * np.arctan2(fi, np.sqrt(1 - fi ** 2))
-            if M < 0: fi = -fi
+        if result.backscattered and self.params.use_detector:
+            det = self.params.detector
+            result.in_detector = det.ion_in_detector(
+                self.engine.psi_deg,
+                result.polar_angle,
+                result.azimuthal_angle,
+                self.engine.xi_deg)
+        else:
+            result.in_detector = result.backscattered
+
+        write_this = result.backscattered and (
+            (not self.params.use_detector) or result.in_detector
+        )
+        if output_file and write_this:
             output_file.write(
                 f"{0:5d}{kc:5d}{E:7.0f}{sne:6.0f}"
-                f"{result.polar_angle:7.2f}{fi:7.2f}{result.azimuthal_angle:7.2f}"
+                f"{result.polar_angle:7.2f}{result.azimuthal_angle:7.2f}"
                 f"{x:8.2f}{y:8.2f}{z:6.2f}{z_max:6.2f}{ko:4d}"
                 f"  P+={result.ion_survival_prob:.3f}\n")
 
@@ -1207,7 +1690,20 @@ class ChannelingSimulation:
             print(f"Crystal: {self.engine.crystal.name}")
             print(f"Ion: {self.engine.ion.name}, E0={self.params.E0:.0f} eV")
             print(f"Angles: psi={self.engine.psi_deg:.1f} deg, xi={self.engine.xi_deg:.1f} deg")
-            print(f"Thermal: u={self.engine.u_therm:.3f} A")
+            u_full = self.engine.u_therm_full
+            if isinstance(u_full, dict) and u_full:
+                # Build "Si:0.065, O:0.085" string from sites
+                type_to_name = {}
+                for s in self.engine.crystal.sites:
+                    if s.atom_type not in type_to_name:
+                        type_to_name[s.atom_type] = s.name
+                parts = [
+                    f"{type_to_name.get(t, '?')}:{float(u):.3f}"
+                    for t, u in sorted(u_full.items())
+                ]
+                print(f"Thermal: {{ {', '.join(parts)} }} A (per element)")
+            else:
+                print(f"Thermal: u={float(u_full):.3f} A")
             print(
                 f"Neutralization: {'ON v0=' + str(self.params.neutralization.v0) if self.params.neutralization.enabled else 'OFF'}")
             print(f"Stopping: alpha_ch={self.params.stopping.alpha_channel}")
@@ -1226,26 +1722,39 @@ class ChannelingSimulation:
                 results.append(res)  # store ALL trajectories
                 if res.backscattered:
                     n_back += 1
+                    if res.in_detector and self.params.use_detector:
+                        n_detected += 1
                 if verbose and n_total % 200 == 0:
                     dt = time.time() - t0
                     print(f"  {n_total}/{total} traj, {n_back} back, {n_total / dt:.0f} traj/s")
 
-        # Histograms
         ie = np.zeros(210, dtype=int)
         for r in results:
+            if not r.backscattered:
+                continue
+            if self.params.use_detector and not r.in_detector:
+                continue
             ien = int(r.final_energy / 25)
-            if 0 <= ien < 210: ie[ien] += 1
-        fout.write("# Energy histogram (25 eV bins)\n")
+            if 0 <= ien < 210:
+                ie[ien] += 1
+        fout.write("# Energy histogram (25 eV bins, backscattered only)\n")
         for i in range(0, 210, 15):
             fout.write(' '.join(f"{ie[j]:5d}" for j in range(i, min(i + 15, 210))) + '\n')
 
         kr = sum(len(r.sputtered_recoils) for r in results)
-        fout.write(f"# KSI={n_back:6d} KR={kr:6d}\n")
+        n_spectrum = sum(1 for r in results
+                         if r.backscattered and
+                         (not self.params.use_detector or r.in_detector))
+        fout.write(f"# KSI={n_spectrum:6d} KR={kr:6d}\n")
         fout.close()
 
         if verbose:
             dt = time.time() - t0
             print(f"\nDone: {n_total} traj in {dt:.1f}s, {n_back} backscattered")
+            if self.params.use_detector:
+                print(f"  → {n_detected} ions in detector "
+                      f"(theta={self.params.detector.theta_deg} deg, "
+                      f"acceptance=+/-{self.params.detector.acceptance_deg} deg)")
             print(f"Output: {output_filename}")
 
         return results
@@ -1260,6 +1769,7 @@ def azimuthal_scan(ion, targets, crystal, params, u_therm,
     """
     Scan azimuthal angle to map all semi-channels.
     """
+    import os as _os  # FIX (BUG #11 ext): cross-platform null device.
     xi_start, xi_end, xi_step = xi_range
     result_map = {}
 
@@ -1271,7 +1781,7 @@ def azimuthal_scan(ion, targets, crystal, params, u_therm,
         pgr = BoundaryParameterCalculator(engine)
         pgr.compute(verbose=False)
         sim = ChannelingSimulation(engine, pgr)
-        results = sim.run_simulation(verbose=False, output_filename=f'/dev/null')
+        results = sim.run_simulation(verbose=False, output_filename=_os.devnull)
         n_back = len([r for r in results if r.backscattered])
         result_map[xi] = n_back
         if verbose:
@@ -1298,12 +1808,16 @@ ATOM_DATA = {
     10: ('Ne', 20.183, 0.0), 12: ('Mg', 24.305, 0.07),
     13: ('Al', 26.982, 0.065), 14: ('Si', 28.086, 0.065),
     15: ('P', 30.974, 0.070), 16: ('S', 32.06, 0.075),
-    18: ('Ar', 39.948, 0.0), 22: ('Ti', 63.546, 0.06),
-    26: ('Fe', 55.845, 0.055), 29: ('Cu', 63.546, 0.065),
+    18: ('Ar', 39.948, 0.0),
+    22: ('Ti', 47.867, 0.06),
+    26: ('Fe', 55.845, 0.055),
+    28: ('Ni', 58.6934, 0.060),
+    29: ('Cu', 63.546, 0.065),
     30: ('Zn', 65.38, 0.070), 31: ('Ga', 69.723, 0.070),
     32: ('Ge', 72.63, 0.065), 33: ('As', 74.922, 0.070),
     34: ('Se', 78.96, 0.075), 36: ('Kr', 83.798, 0.0),
     38: ('Sr', 87.62, 0.08), 40: ('Zr', 91.224, 0.06),
+    42: ('Mo', 95.95, 0.050),
     47: ('Ag', 107.868, 0.07), 48: ('Cd', 112.414, 0.075),
     49: ('In', 114.818, 0.075), 50: ('Sn', 118.71, 0.070),
     51: ('Sb', 121.76, 0.070), 52: ('Te', 127.60, 0.075),
@@ -1315,14 +1829,19 @@ ATOM_DATA = {
 
 # Material classification for neutralization
 MATERIAL_CLASS = {
-    'SiO2': 'oxide', 'Al2O3': 'oxide', 'MgO': 'oxide',
+    'SiO2': 'oxide', 'SiO2_alpha': 'oxide',
+    'Al2O3': 'oxide', 'MgO': 'oxide',
     'GaP': 'semi', 'GaAs': 'semi', 'InP': 'semi', 'InAs': 'semi',
     'CdTe': 'semi', 'ZnSe': 'semi', 'ZnS': 'semi', 'ZnTe': 'semi',
     'GaN': 'semi', 'AlN': 'semi', 'SiC_3C': 'semi',
     'HgTe': 'semi', 'CdS': 'semi', 'GaSb': 'semi', 'InSb': 'semi',
     'AlAs': 'semi', 'AlP': 'semi', 'InN': 'semi',
+    # Diamond-cubic elementals: Si/Ge/C are semiconductors,
+    # alpha-Sn is a (semi)metal.
+    'Si': 'semi', 'Ge': 'semi', 'C': 'semi', 'Sn': 'metal',
     'Cu': 'metal', 'Au': 'metal', 'Ag': 'metal', 'Pt': 'metal',
     'Fe': 'metal', 'W': 'metal',
+    'Al': 'metal', 'Ni': 'metal', 'Mo': 'metal',
 }
 
 
@@ -1360,34 +1879,56 @@ def auto_targets_from_crystal(crystal: CrystalStructure) -> List['TargetAtom']:
         if Z == 0:
             for n in [name[:2], name[:1]]:
                 if n in SYM_TO_Z:
+                    if n != name:
+                        warnings.warn(
+                            f"auto_targets_from_crystal: atom name "
+                            f"'{name}' not in ATOM_DATA; falling back "
+                            f"to '{n}' (Z={SYM_TO_Z[n]}). If this is "
+                            f"the wrong element, add the correct one "
+                            f"to ATOM_DATA.",
+                            stacklevel=2)
                     Z = SYM_TO_Z[n]
                     break
         if Z == 0:
-            raise ValueError(f"Cannot determine Z for atom '{name}'")
+            raise ValueError(
+                f"Cannot determine Z for atom '{name}'. Add an entry "
+                f"to ATOM_DATA: Z: ('{name}', mass_amu, u_300_K).")
         sym, mass, _ = get_atom_data(Z)
         targets.append(TargetAtom(Z=Z, A=mass, name=name))
 
     return targets
 
 
-def auto_u_therm(crystal: CrystalStructure, temperature_K: float = 300.0) -> float:
+def auto_u_therm(crystal: CrystalStructure, temperature_K: float = 300.0,
+                 per_element: bool = True):
     """
-    Estimate compound thermal vibration amplitude.
-    Uses Debye model scaling: u(T) ∝ sqrt(T/T_Debye) at T > T_Debye.
+    Estimate thermal vibration amplitudes.
+    Uses high-temperature Debye scaling u(T) = u(300) * sqrt(T/300).
     """
     SYM_TO_Z = {v[0]: k for k, v in ATOM_DATA.items()}
-    u_sq_sum = 0.0
-    n = 0
+    type_to_u = {}
+    type_to_count = {}
     for site in crystal.sites:
         Z = SYM_TO_Z.get(site.name, SYM_TO_Z.get(site.name[:2],
                                                  SYM_TO_Z.get(site.name[:1], 14)))
         _, _, u300 = get_atom_data(Z)
-        if u300 > 0:
-            # Scale with temperature (simplified Debye)
-            u = u300 * np.sqrt(temperature_K / 300.0)
-            u_sq_sum += u ** 2 * site.occupation
-            n += site.occupation
-    return np.sqrt(u_sq_sum / max(n, 1))
+        if u300 <= 0:
+            continue
+        u = u300 * np.sqrt(temperature_K / 300.0)
+        atype = int(site.atom_type)
+        prev = type_to_u.get(atype, 0.0)
+        type_to_u[atype] = max(prev, u)
+        type_to_count[atype] = type_to_count.get(atype, 0.0) + site.occupation
+
+    if not type_to_u:
+        return {} if per_element else 0.0
+
+    if per_element:
+        return type_to_u
+
+    u_sq_sum = sum(u ** 2 * type_to_count[k] for k, u in type_to_u.items())
+    n = sum(type_to_count.values())
+    return float(np.sqrt(u_sq_sum / max(n, 1.0)))
 
 
 def auto_electronic_stopping(ion_Z: int, targets: List['TargetAtom'],
@@ -1401,12 +1942,11 @@ def auto_electronic_stopping(ion_Z: int, targets: List['TargetAtom'],
 
     # Weighted average over target atoms (Bragg's rule)
     se_sum = 0.0
-    n_atoms = 0
+    n_atoms = 0.0
     for t in targets:
         z2 = float(t.Z)
         a2 = t.A
-        # Count atoms of this type in unit cell
-        count = sum(1 for s in crystal.sites if s.name == t.name)
+        count = sum(s.occupation for s in crystal.sites if s.name == t.name)
 
         # Lindhard-Scharff coefficient
         zp = z1 ** (1.0 / 6.0)
@@ -1422,7 +1962,7 @@ def auto_electronic_stopping(ion_Z: int, targets: List['TargetAtom'],
         se_sum += se_atom * count
         n_atoms += count
 
-    se_base = se_sum / max(n_atoms, 1)
+    se_base = se_sum / max(n_atoms, 1.0)
 
     # Channel parameters from geometry
     ch_width = crystal.auto_channel_spacing()
@@ -1436,15 +1976,20 @@ def auto_electronic_stopping(ion_Z: int, targets: List['TargetAtom'],
     )
 
 
-def auto_neutralization(ion_Z: int, crystal_name: str) -> 'NeutralizationModel':
+def auto_neutralization(ion_Z: int, crystal_name: str,
+                        enabled: bool = False) -> 'NeutralizationModel':
     """Auto-determine neutralization parameters from ion and material type."""
     ion_sym = get_atom_data(ion_Z)[0]
     mat_class = MATERIAL_CLASS.get(crystal_name, 'semi')
 
-    key = (ion_sym, mat_class)
-    v0 = NeutralizationModel.V0_TABLE.get(key, 1.0e5)
+    key_specific = (ion_sym, crystal_name)
+    if key_specific in NeutralizationModel.V0_TABLE:
+        v0 = NeutralizationModel.V0_TABLE[key_specific]
+    else:
+        key_class = (ion_sym, mat_class)
+        v0 = NeutralizationModel.V0_TABLE.get(key_class, 1.0e5)
 
-    return NeutralizationModel(v0=v0, enabled=False)  # off by default
+    return NeutralizationModel(v0=v0, enabled=enabled)
 
 
 def auto_setup(ion_Z: int, crystal_name: str, E0: float = 2000.0,
@@ -1454,6 +1999,9 @@ def auto_setup(ion_Z: int, crystal_name: str, E0: float = 2000.0,
                enable_neutralization: bool = False,
                enable_detector: bool = False,
                detector_angle: float = 136.0,
+               detector_acceptance: float = 3.0,
+               detector_azimuth: float = 0.0,
+               detector_azimuth_accept: float = 180.0,
                n_trajectories: int = 1000) -> dict:
     """
     ONE-CALL SETUP: Creates everything needed for simulation
@@ -1462,8 +2010,9 @@ def auto_setup(ion_Z: int, crystal_name: str, E0: float = 2000.0,
     Returns dict with: ion, targets, crystal, params, engine, pgr, sim
 
     Usage:
-        setup = auto_setup(ion_Z=10, crystal_name='SiO2', E0=2000)
-        results = setup['sim'].run_simulation()
+        # ring detector, default 3 deg acceptance:
+        setup = auto_setup(ion_Z=10, crystal_name='SiO2', E0=2000,
+                           enable_detector=True, detector_angle=136)
     """
     # Crystal
     crystal = get_crystal(crystal_name)
@@ -1481,11 +2030,16 @@ def auto_setup(ion_Z: int, crystal_name: str, E0: float = 2000.0,
     stopping = auto_electronic_stopping(ion_Z, targets, crystal)
 
     # Neutralization (auto-calibrated)
-    neutralization = auto_neutralization(ion_Z, crystal_name)
-    neutralization.enabled = enable_neutralization
+    neutralization = auto_neutralization(ion_Z, crystal_name,
+                                         enabled=enable_neutralization)
 
     # Detector
-    detector = Detector(theta_deg=detector_angle)
+    detector = Detector(
+        theta_deg=detector_angle,
+        acceptance_deg=detector_acceptance,
+        azimuth_deg=detector_azimuth,
+        azimuth_accept_deg=detector_azimuth_accept,
+    )
 
     # Defects
     defects = DefectMap(vacancy_fraction=vacancy_fraction)
@@ -1542,7 +2096,12 @@ def main():
     print(f"  Ion: {setup['ion'].name}")
     print(f"  Crystal: {setup['crystal'].name}")
     print(f"  Targets: {', '.join(t.name + f'(Z={t.Z})' for t in setup['targets'])}")
-    print(f"  Thermal u = {setup['u_therm']:.4f} A (auto)")
+    u = setup['u_therm']
+    if isinstance(u, dict):
+        u_str = ', '.join(f"{k}:{float(v):.4f}" for k, v in sorted(u.items()))
+        print(f"  Thermal u (per type) = {{{u_str}}} A (auto)")
+    else:
+        print(f"  Thermal u = {float(u):.4f} A (auto)")
     print(f"  Se_base = {setup['stopping'].se_base:.4f} (auto)")
     print(f"  alpha_ch = {setup['stopping'].alpha_channel:.3f} (auto)")
 
@@ -1608,7 +2167,7 @@ def main():
     print(f"  → Backscattered: {len(back3)}")
 
     print("\n" + "=" * 65)
-    print("  All examples completed successfully.")
+    print("  All examples_1 completed successfully.")
     print("  Usage: setup = auto_setup(ion_Z=10, crystal_name='GaP', E0=2000)")
     print("         results = setup['sim'].run_simulation()")
     print("=" * 65)
