@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-green.svg)](https://www.python.org/)
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19501756-blue)](https://doi.org/10.5281/zenodo.19501756)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20547246-blue)](https://doi.org/10.5281/zenodo.20547246)
 
 ## Overview
 
@@ -131,4 +131,4 @@ MIT License. See [LICENSE](LICENSE) for details.
 ## Repository
 
 - GitHub: https://github.com/atashbek/BCA_modern
-- Zenodo: https://doi.org/10.5281/zenodo.19501756
+- Zenodo: https://doi.org/10.5281/zenodo.20547246
